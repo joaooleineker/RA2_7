@@ -415,8 +415,61 @@ def lerTokens(nome_arquivo):
         print(f"Erro: O arquivo '{nome_arquivo}' não foi encontrado.")
         sys.exit(1)
 
-def parsear():
-    pass
+def parsear(linhas_de_tokens, tabela_ll1):
+    """
+    Inicia a análise sintática descendente recursiva usando a tabela LL(1).
+    """
+    # achata a lista de listas em uma única fita sequencial
+    lista_tokens = []
+    
+    for tokens_da_linha in linhas_de_tokens:
+        for token_extraido in tokens_da_linha:
+            lista_tokens.append(token_extraido)
+            
+    # adiciona o token de fim de arquivo (EOF) representado por '$' na última posição
+    token_fim = Token("$", "$")
+    lista_tokens.append(token_fim)
+
+    indice_atual = 0
+
+    def consumirToken(tipo_esperado):
+        nonlocal indice_atual
+        
+        # se o indice extrapolou a fita, não podemos consumir 
+        if indice_atual >= len(lista_tokens):
+            return False
+            
+        token_analisado = lista_tokens[indice_atual]
+        
+        # valida se é TIPO (ex: NUMERO) ou o VALOR exato (ex: $)
+        if token_analisado.tipo == tipo_esperado or token_analisado.valor == tipo_esperado or token_analisado.tipo == f"KEYWORD_{tipo_esperado}":
+            # exibe log ao lado sinalizando pareamento correto
+            print(f"  [Match] Casou limite de token: {token_analisado.valor} (referência: {tipo_esperado})")
+            indice_atual += 1
+            return True
+            
+        print(f"  [Erro] Esperava '{tipo_esperado}', mas obteve token '{token_analisado.valor}'.")
+        return False
+
+    print("parsing\n")
+    print(f"-> Quantidade de tokens inseridos na fita de leitura: {len(lista_tokens)}")
+    
+    # string visual para exibir no terminal como feedback do array alisado
+    textos_dos_tokens = []
+    tipos_literais = ["OPERADOR", "OPERADOR_REL", "ABRE_PAREN", "FECHA_PAREN", "$"]
+    
+    for token in lista_tokens:
+        if token.tipo in tipos_literais:
+            textos_dos_tokens.append(token.valor) 
+        else:
+            textos_dos_tokens.append(token.tipo)  
+            
+    fita_formatada = " ".join(textos_dos_tokens)
+    print(f"-> Fita pronta: {fita_formatada}\n")
+    
+    #falta funções recursivas
+    
+    return None
 
 def gerarArvore():
     pass
@@ -444,6 +497,9 @@ def main():
     resultado_gramatica = construirGramatica()
 
     exibirGramatica(resultado_gramatica)
+    
+    # aciona o analisador repassando o buffer extraído e a tabela formatada do aluno 1
+    arvore_sintatica = parsear(tokens, resultado_gramatica["tabela_ll1"])
 
 if __name__ == "__main__":
     main()
