@@ -662,6 +662,265 @@ def gerarArvore(derivacao, nome_teste):
     except Exception as e:
         print(f"Erro ao gerar o arquivo da árvore sintática: {e}")
 
+def coletarTerminais(no):
+    """
+    Percorre um nó da árvore e coleta todos os terminais (folhas) em ordem.
+    Como a árvore respeita a ordem RPN, os terminais já saem na sequência correta
+    para processamento (mesma lógica do léxico, só que extraída da árvore).
+    """
+    terminais = []
+    if "terminal_folha" in no:
+        terminais.append(no)
+    elif "nodos_filhos" in no:
+        for filho in no["nodos_filhos"]:
+            terminais.extend(coletarTerminais(filho))
+    return terminais
+
+def gerarAssembly(arvore, nome_arquivo):
+    """
+    Percorre a árvore sintática gerada pelo parsear() e gera código Assembly ARMv7 (VFP)
+    para o ambiente Cpulator-ARMv7 DE1-SoC.
+    """
+
+    secao_dados = []
+    secao_texto = []
+    contador_label = [0]       # lista para permitir modificação dentro das funções internas
+    labels_memoria = set()     # variáveis de memória já declaradas no .data
+    constantes_usadas = {}     # deduplicação de constantes: valor -> nome_label
+
+
+    def obterLabelUnico(prefixo):
+        """Gera um label único para controle de fluxo."""
+        label = f"{prefixo}_{contador_label[0]}"
+        contador_label[0] += 1
+        return label
+
+    def garantirConstante(valor_texto):
+        """Registra uma constante no .data (se ainda não existir) e retorna o nome do label."""
+        if valor_texto in constantes_usadas:
+            return constantes_usadas[valor_texto]
+        nome_label = "const_" + valor_texto.replace(".", "_").replace("-", "neg")
+        constantes_usadas[valor_texto] = nome_label
+        secao_dados.append("    .align 3")
+        secao_dados.append(f"    {nome_label}: .double {valor_texto}")
+        return nome_label
+
+    def garantirMemoria(nome_mem):
+        """Registra uma variável de memória no .data (se ainda não existir)."""
+        nome_label = "mem_" + nome_mem
+        if nome_label not in labels_memoria:
+            secao_dados.append("    .align 3")
+            secao_dados.append(f"    {nome_label}: .double 0.0")
+            labels_memoria.add(nome_label)
+        return nome_label
+
+
+    def processarComando(no_comando):
+        """
+        Processa um nó 'comando' da árvore.
+        Extrai os terminais em ordem RPN e gera o Assembly correspondente.
+        Retorna o registrador com o resultado (ou None).
+        """
+        pilha_regs = []
+        cont_reg = [0]
+
+        # Busca o nó conteudo_comando dentro do comando
+        filhos = no_comando.get("nodos_filhos", [])
+        no_conteudo = None
+        for filho in filhos:
+            if filho.get("nodo_pai") == "conteudo_comando":
+                no_conteudo = filho
+                break
+
+        if no_conteudo is None:
+            return None
+
+        producao = no_conteudo.get("producao_acionada", "")
+
+        # ---- START / END ----
+        if producao == "KEYWORD_START":
+            secao_texto.append("")
+            secao_texto.append("    @ (START) - início do programa")
+            return None
+
+        if producao == "KEYWORD_END":
+            secao_texto.append("")
+            secao_texto.append("    @ (END) - fim do programa")
+            return None
+
+        # ---- Detecta se é WHILE ou IF ----
+        terminais = coletarTerminais(no_conteudo)
+        tipos_terminais = [t.get("terminal_folha", "") for t in terminais]
+
+        if "KEYWORD_WHILE" in tipos_terminais:
+            # FAÇA ISSO: Gerar loop com labels (label_inicio, label_fim), processar condição e corpo
+            secao_texto.append("")
+            secao_texto.append("    @ FAÇA ISSO: WHILE - implementar loop com labels")
+            return None
+
+        if "KEYWORD_IF" in tipos_terminais:
+            # FAÇA ISSO: Gerar condicional com labels (label_else, label_fim), processar condição, then e else
+            secao_texto.append("")
+            secao_texto.append("    @ FAÇA ISSO: IF - implementar condicional com labels")
+            return None
+
+        # ---- Comando simples: processa terminais em ordem RPN ----
+        secao_texto.append("")
+        for terminal in terminais:
+            tipo = terminal.get("terminal_folha", "")
+            valor = terminal.get("valor_extraido", "")
+
+            # Pula parênteses e epsilon
+            if tipo in ("ABRE_PAREN", "FECHA_PAREN", "ε"):
+                continue
+
+            # NUMERO: carrega constante em registrador VFP
+            if tipo == "NUMERO":
+                nome_const = garantirConstante(valor)
+                nome_reg = f"D{cont_reg[0]}"
+                cont_reg[0] += 1
+                secao_texto.append(f"    LDR R4, ={nome_const}")
+                secao_texto.append(f"    VLDR {nome_reg}, [R4]        @ carrega double {valor}")
+                pilha_regs.append(nome_reg)
+
+            # OPERADOR: desempilha 2 registradores, opera, empilha resultado
+            elif tipo == "OPERADOR":
+                if len(pilha_regs) < 2:
+                    secao_texto.append(f"    @ ERRO: operandos insuficientes para '{valor}'")
+                    continue
+
+                reg_b = pilha_regs.pop()
+                reg_a = pilha_regs.pop()
+                reg_res = f"D{cont_reg[0]}"
+                cont_reg[0] += 1
+
+                if valor == "+":
+                    secao_texto.append(f"    VADD.F64 {reg_res}, {reg_a}, {reg_b}    @ {reg_a} + {reg_b}")
+                elif valor == "-":
+                    secao_texto.append(f"    VSUB.F64 {reg_res}, {reg_a}, {reg_b}    @ {reg_a} - {reg_b}")
+                elif valor == "*":
+                    secao_texto.append(f"    VMUL.F64 {reg_res}, {reg_a}, {reg_b}    @ {reg_a} * {reg_b}")
+                elif valor == "|":
+                    secao_texto.append(f"    VDIV.F64 {reg_res}, {reg_a}, {reg_b}    @ divisão real")
+                elif valor == "/":
+                    secao_texto.append(f"    VDIV.F64 {reg_res}, {reg_a}, {reg_b}    @ divisão inteira")
+                    secao_texto.append(f"    VCVT.S32.F64 S31, {reg_res}    @ trunca para inteiro")
+                    secao_texto.append(f"    VCVT.F64.S32 {reg_res}, S31    @ volta para double")
+                elif valor == "%":
+                    secao_texto.append(f"    @ resto: {reg_a} % {reg_b}")
+                    secao_texto.append(f"    VDIV.F64 {reg_res}, {reg_a}, {reg_b}")
+                    secao_texto.append(f"    VCVT.S32.F64 S31, {reg_res}")
+                    secao_texto.append(f"    VCVT.F64.S32 {reg_res}, S31")
+                    secao_texto.append(f"    VMUL.F64 {reg_res}, {reg_res}, {reg_b}")
+                    secao_texto.append(f"    VSUB.F64 {reg_res}, {reg_a}, {reg_res}    @ resto")
+                elif valor == "^":
+                    label_pot = obterLabelUnico("potencia")
+                    secao_texto.append(f"    @ potenciação: {reg_a} ^ {reg_b}")
+                    secao_texto.append(f"    VCVT.S32.F64 S31, {reg_b}")
+                    secao_texto.append(f"    VMOV R0, S31              @ R0 = expoente")
+                    nome_c1 = garantirConstante("1.0")
+                    secao_texto.append(f"    LDR R4, ={nome_c1}")
+                    secao_texto.append(f"    VLDR {reg_res}, [R4]    @ resultado = 1.0")
+                    secao_texto.append(f"{label_pot}:")
+                    secao_texto.append(f"    CMP R0, #0")
+                    secao_texto.append(f"    BLE {label_pot}_fim")
+                    secao_texto.append(f"    VMUL.F64 {reg_res}, {reg_res}, {reg_a}")
+                    secao_texto.append(f"    SUB R0, R0, #1")
+                    secao_texto.append(f"    B {label_pot}")
+                    secao_texto.append(f"{label_pot}_fim:")
+
+                pilha_regs.append(reg_res)
+
+            # --- OPERADOR_REL: comparação relacional ---
+            elif tipo == "OPERADOR_REL":
+                # FAÇA ISSO: Desempilhar 2 regs, usar VCMP.F64 + VMRS, empilhar 1.0 (true) ou 0.0 (false)
+                # FAÇA ISSO: Branch invertido por operador: < -> BGE, > -> BLE, == -> BNE, != -> BEQ, <= -> BGT, >= -> BLT
+                secao_texto.append(f"    @ FAÇA ISSO: comparação relacional '{valor}'")
+
+            # --- MEMORIA: load ou store (mesmo padrão do léxico) ---
+            elif tipo == "MEMORIA":
+                nome_label = garantirMemoria(valor)
+                if len(pilha_regs) > 0:
+                    reg_valor = pilha_regs.pop()
+                    secao_texto.append(f"    LDR R0, ={nome_label}        @ store em {valor}")
+                    secao_texto.append(f"    VSTR {reg_valor}, [R0]")
+                else:
+                    reg_carregado = f"D{cont_reg[0]}"
+                    cont_reg[0] += 1
+                    secao_texto.append(f"    LDR R0, ={nome_label}        @ load de {valor}")
+                    secao_texto.append(f"    VLDR {reg_carregado}, [R0]")
+                    pilha_regs.append(reg_carregado)
+
+            # KEYWORD_RES: acessa histórico de resultados
+            elif tipo == "KEYWORD_RES":
+                # FAÇA ISSO: Converter N para inteiro, acessar resultados[total - N] e empilhar
+                # (OLHE as linhas 430-449 do lexico)
+                secao_texto.append(f"    @ FAÇA ISSO: RES - acessar resultado anterior")
+
+        # Armazena resultado no histórico (se a pilha tiver exatamente 1 valor)
+        if len(pilha_regs) == 1:
+            reg_final = pilha_regs[0]
+            secao_texto.append(f"    @ Armazena resultado no histórico")
+            secao_texto.append(f"    LDR R0, =numResultados")
+            secao_texto.append(f"    LDR R1, [R0]                @ R1 = numResultados atual")
+            secao_texto.append(f"    LDR R2, =resultados")
+            secao_texto.append(f"    LSL R3, R1, #3              @ offset = R1 * 8")
+            secao_texto.append(f"    ADD R2, R2, R3")
+            secao_texto.append(f"    VSTR {reg_final}, [R2]               @ guarda resultado")
+            secao_texto.append(f"    ADD R1, R1, #1")
+            secao_texto.append(f"    STR R1, [R0]                @ numResultados++")
+
+        return pilha_regs[0] if pilha_regs else None
+
+
+    def percorrerArvore(no):
+        """Percorre a árvore buscando nós 'comando' no nível do comando_lista."""
+        if "nodo_pai" in no:
+            nome = no["nodo_pai"]
+
+            if nome == "comando":
+                processarComando(no)
+                return
+
+        # Se não é um comando, continua descendo na árvore
+        if "nodos_filhos" in no:
+            for filho in no["nodos_filhos"]:
+                percorrerArvore(filho)
+
+    # Percorre a partir da raiz
+    percorrerArvore(arvore)
+
+    # Adiciona histórico de resultados ao .data
+    secao_dados.append("    .align 3")
+    secao_dados.append("    resultados: .space 800       @ espaço para 100 doubles")
+    secao_dados.append("    numResultados: .word 0")
+
+    codigo_final = []
+    codigo_final.append(".global _start")
+    codigo_final.append("")
+    codigo_final.append(".data")
+    codigo_final.extend(secao_dados)
+    codigo_final.append("")
+    codigo_final.append(".text")
+    codigo_final.append("_start:")
+    codigo_final.extend(secao_texto)
+    codigo_final.append("")
+    codigo_final.append("    @ Fim do programa")
+    codigo_final.append("fim:")
+    codigo_final.append("    B fim")
+
+    # Salva o arquivo .s
+    nome_saida = nome_arquivo.replace(".txt", ".s")
+    try:
+        with open(nome_saida, 'w', encoding='utf-8') as f:
+            for linha in codigo_final:
+                f.write(linha + "\n")
+        print(f"Assembly gerado e salvo em '{nome_saida}'.")
+    except Exception as e:
+        print(f"Erro ao salvar Assembly: {e}")
+
+    return codigo_final
+
 def main():
     if len(sys.argv) < 2:
         print("Uso: python sintatico.py <arquivo_teste>")
@@ -690,8 +949,11 @@ def main():
     # Aciona o analisador repassando o buffer extraído e a tabela formatada
     derivacao = parsear(tokens, resultado_gramatica["tabela_ll1"])
 
-    # Gera o arquivo arvore_sintatica.md com o resultado referente ao teste passado via terminal
+    # Gera o arquivo arvore_sintatica.md
     gerarArvore(derivacao, arquivo_codigo_fonte)
+
+    # Gera o arquivo Assembly (.s) a partir da árvore sintática
+    gerarAssembly(derivacao, arquivo_codigo_fonte)
 
 if __name__ == "__main__":
     main()
