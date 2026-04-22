@@ -103,7 +103,6 @@ def construirGramatica():
 
     return resultado_gramatica
 
-
 def calcularFirst(regras_producao, lista_terminais):
     """
     Calcula os conjuntos FIRST para cada não-terminal usando algoritmo de ponto fixo.
@@ -131,7 +130,6 @@ def calcularFirst(regras_producao, lista_terminais):
                     houve_mudanca = True
 
     return conjuntos_first
-
 
 def calcularFirstDeProducao(producao, conjuntos_first, lista_terminais):
     """
@@ -166,7 +164,6 @@ def calcularFirstDeProducao(producao, conjuntos_first, lista_terminais):
         resultado_first.add("ε")
 
     return resultado_first
-
 
 def calcularFollow(regras_producao, conjuntos_first, lista_terminais):
     """
@@ -223,7 +220,6 @@ def calcularFollow(regras_producao, conjuntos_first, lista_terminais):
 
     return conjuntos_follow
 
-
 def construirTabelaLL1(regras_producao, conjuntos_first, conjuntos_follow, lista_terminais):
     """
     Constrói a tabela de análise LL(1).
@@ -270,7 +266,6 @@ def construirTabelaLL1(regras_producao, conjuntos_first, conjuntos_follow, lista
 
     return tabela_ll1
 
-
 def validarGramaticaLL1(tabela_ll1):
     """
     Verifica se a tabela LL(1) possui conflitos.
@@ -293,7 +288,6 @@ def validarGramaticaLL1(tabela_ll1):
 
     print("Gramática validada: é LL(1) sem conflitos.")
     return True
-
 
 def exibirGramatica(resultado_gramatica):
     """
@@ -564,8 +558,109 @@ def parsear(linhas_de_tokens, tabela_ll1):
     print("\n=> Parsing e rastreamento recursivo concluídos com sucesso!")
     return arvore_sintatica_ast # retorna a AST
 
-def gerarArvore():
-    pass
+def construirTextoArvore(no, prefixo="", eh_ultimo=True, eh_raiz=True):
+    """
+    Percorre a Árvore Sintática de forma recursiva e constrói uma representação
+    visual em texto usando caracteres de ramificação (para depois salvar no arquivo .md).
+    """
+    linhas = []
+
+    # Define o texto do nó lendo as chaves do parser
+    if "terminal_folha" in no:
+        # Como é um nó folha (terminal) -> extraí o valor com "valor_extraido" e caso não exista, deixa vazio (para evitar None)
+        valor = no.get("valor_extraido", "")
+        # Exibe o tipo do terminal e o valor correspondente -> como NUMERO (3.14)
+        texto_no = f"{no['terminal_folha']} ({valor})"
+    elif "nodo_pai" in no:
+        # É um nó interno (não-terminal) -> exemplo: comando, sufixo_numero, conteudo_comando, etc
+        texto_no = no["nodo_pai"]
+    elif "erro_sintatico" in no:
+        # Nó folha com erro capturado pelo "Panic Mode"
+        texto_no = f"ERRO SINTÁTICO: {no['erro_sintatico']}"
+    elif "erro_nodo_pai" in no:
+        # Nó pai que falhou na derivação -> nenhuma regra válida na tabela LL(1) para o token
+        texto_no = f"FALHA NO NÓ: {no['erro_nodo_pai']} (Token inesperado: {no.get('falha_registro', '')})"
+    else:
+        # Segurança extra para caso nó venha mal formado
+        texto_no = "Nó Desconhecido"
+
+    # Desenha os galhos
+    if eh_raiz:
+        # A raiz é o ponto de partida, não tenho nenhum galho
+        linhas.append(texto_no)
+        # Não há linha vertical antes da raiz, então o prefixo para os filhos começa vazio
+        novo_prefixo = ""
+    else:
+        # Caso seja uma folha/último filho
+        if eh_ultimo:
+            marcador = "└── "
+            # Não tem mais irmãos depois -> espaço em branco
+            novo_prefixo = prefixo + "    "
+        else:
+            # Caso ainda tenha irmãos abaixo
+            marcador = "├── "
+            # Ainda tem irmãos depois -> mantém a linha vertical para conectar
+            novo_prefixo = prefixo + "│   "
+            
+
+        # Junta o que veio dos anteriores, galho atual, e nome do nó atual
+        linhas.append(f"{prefixo}{marcador}{texto_no}")
+
+    # Prepara a lista de filhos para recursão
+    if "nodos_filhos" in no: # exemplo: comando -> ABRE_PAREN, conteudo_comando, FECHA_PAREN 
+        filhos = no["nodos_filhos"]
+    else:
+        filhos = []
+
+    # Para o exemplo, temos total_filhos = 3. 
+    total_filhos = len(filhos) # contudo, terminal não tem filhos, logo, total_filhos = 0
+
+    # Loop de recursão -> terminais apenas retornam linha do próprio nó, enquanto não-terminais continuam gerando filhos
+    for i in range(total_filhos):
+        filho = filhos[i]
+        
+        # Define explicitamente se é o último filho da lista
+        if i == (total_filhos - 1):
+            ultimo_filho = True
+        else:
+            ultimo_filho = False
+            
+        # A recursão passa o novo_prefixo para o nível de baixo e obviamente não é mais raiz
+        linhas_filho = construirTextoArvore(filho, novo_prefixo, ultimo_filho, False)
+
+        # Armazena as linhas geradas pelos filhos na lista de linhas do nível atual
+        linhas.extend(linhas_filho)
+
+    # Roda para cada nó
+    # - Se for um terminal -> for não executou. O return apenas devolve a linha para o pai
+    # - Se for um não-terminal -> devolve a lista completa com todos os galhos dos filhos já agrupados
+    return linhas
+
+def gerarArvore(derivacao, nome_teste):
+    """
+    Chama a função construir_texto_arvore para gerar a árvore em formato de string
+    e exporta o resultado para o arquivo 'arvore_sintatica.md'.
+    """
+    nome_arquivo = "arvore_sintatica.md"
+
+    try:
+        # Passa a derivação para a função que desenha os galhos
+        linhas_arvore = construirTextoArvore(derivacao)
+        # Junta as linhas da lista em um único texto pulando as linhas
+        texto_final = "\n".join(linhas_arvore)
+
+        # Grava no arquivo
+        with open(nome_arquivo, 'w', encoding='utf-8') as f:
+            f.write("# Árvore Sintática (Derivação)\n\n")
+            f.write(f"## Resultado do {nome_teste}:\n\n")
+            f.write("```text\n")
+            f.write(texto_final + "\n")
+            f.write("```\n")
+
+        print(f"Sucesso: A árvore sintática foi estruturada e salva em '{nome_arquivo}'.")
+
+    except Exception as e:
+        print(f"Erro ao gerar o arquivo da árvore sintática: {e}")
 
 def main():
     if len(sys.argv) < 2:
@@ -593,7 +688,10 @@ def main():
     print("\n        INÍCIO DO PROCESSADOR SINTÁTICO DA FITA        \n")
        
     # Aciona o analisador repassando o buffer extraído e a tabela formatada
-    arvore_sintatica = parsear(tokens, resultado_gramatica["tabela_ll1"])
+    derivacao = parsear(tokens, resultado_gramatica["tabela_ll1"])
+
+    # Gera o arquivo arvore_sintatica.md com o resultado referente ao teste passado via terminal
+    gerarArvore(derivacao, arquivo_codigo_fonte)
 
 if __name__ == "__main__":
     main()
