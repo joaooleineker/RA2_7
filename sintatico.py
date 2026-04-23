@@ -8,6 +8,7 @@ Integrantes do grupo (ordem alfabética):
 """
 import sys
 import io
+import json
 
 # Força saída UTF-8 no console do Windows
 if sys.stdout.encoding != 'utf-8':
@@ -641,7 +642,8 @@ def gerarArvore(derivacao, nome_teste):
     Chama a função construir_texto_arvore para gerar a árvore em formato de string
     e exporta o resultado para o arquivo 'arvore_sintatica.md'.
     """
-    nome_arquivo = "arvore_sintatica.md"
+    nome_arquivo_md = "arvore_sintatica.md"
+    nome_arquivo_json = "arvore_sintatica.json"
 
     try:
         # Passa a derivação para a função que desenha os galhos
@@ -650,14 +652,22 @@ def gerarArvore(derivacao, nome_teste):
         texto_final = "\n".join(linhas_arvore)
 
         # Grava no arquivo
-        with open(nome_arquivo, 'w', encoding='utf-8') as f:
-            f.write("# Árvore Sintática (Derivação)\n\n")
-            f.write(f"## Resultado do {nome_teste}:\n\n")
-            f.write("```text\n")
-            f.write(texto_final + "\n")
-            f.write("```\n")
+        with open(nome_arquivo_md, 'w', encoding='utf-8') as arquivo_md:
+            arquivo_md.write("# Árvore Sintática (Derivação)\n\n")
+            arquivo_md.write(f"## Resultado do {nome_teste}:\n\n")
+            arquivo_md.write("```text\n")
+            arquivo_md.write(texto_final + "\n")
+            arquivo_md.write("```\n")
 
-        print(f"Sucesso: A árvore sintática foi estruturada e salva em '{nome_arquivo}'.")
+        with open(nome_arquivo_json, 'w', encoding='utf-8') as arquivo_json:
+            # ensure_ascii=False para manter caracteres como ε
+            # indent=4 para deixar o JSON mais legível -> separa em múltiplas linhas
+            json.dump(derivacao, arquivo_json, ensure_ascii=False, indent=4)
+            
+        print(f"Sucesso: Árvore exportada para '{nome_arquivo_md}' e '{nome_arquivo_json}'.")
+
+        arvore_estruturada = derivacao
+        return arvore_estruturada
 
     except Exception as e:
         print(f"Erro ao gerar o arquivo da árvore sintática: {e}")
@@ -753,15 +763,116 @@ def gerarAssembly(arvore, nome_arquivo):
         tipos_terminais = [t.get("terminal_folha", "") for t in terminais]
 
         if "KEYWORD_WHILE" in tipos_terminais:
-            # FAÇA ISSO: Gerar loop com labels (label_inicio, label_fim), processar condição e corpo
+            # Estrutura na árvore: conteudo_comando → comando(condição) + sufixo_comando → comando(corpo) + apos_cmd(WHILE)
+            label_inicio = obterLabelUnico("while")
+            label_fim = f"{label_inicio}_fim"
+
+            # Extrair sub-comandos da árvore
+            filhos_conteudo = no_conteudo.get("nodos_filhos", [])
+            cmd_condicao = None
+            sufixo_cmd = None
+            for f in filhos_conteudo:
+                if f.get("nodo_pai") == "comando" and cmd_condicao is None:
+                    cmd_condicao = f
+                elif f.get("nodo_pai") == "sufixo_comando":
+                    sufixo_cmd = f
+
+            # Dentro de sufixo_comando, o primeiro 'comando' é o corpo do loop
+            cmd_corpo = None
+            if sufixo_cmd:
+                for f in sufixo_cmd.get("nodos_filhos", []):
+                    if f.get("nodo_pai") == "comando":
+                        cmd_corpo = f
+                        break
+
             secao_texto.append("")
-            secao_texto.append("    @ FAÇA ISSO: WHILE - implementar loop com labels")
+            secao_texto.append(f"    @ WHILE - início do loop")
+            secao_texto.append(f"{label_inicio}:")
+
+            # Processa a condição (gera Assembly do sub-comando e retorna registrador com resultado)
+            secao_texto.append(f"    @ Avalia condição do WHILE")
+            reg_cond = None
+            if cmd_condicao:
+                reg_cond = processarComando(cmd_condicao)
+
+            # Compara resultado da condição com 0.0 (falso) → se igual, sai do loop
+            if reg_cond:
+                nome_zero = garantirConstante("0.0")
+                secao_texto.append(f"    LDR R4, ={nome_zero}")
+                secao_texto.append(f"    VLDR D15, [R4]              @ 0.0 para comparação")
+                secao_texto.append(f"    VCMP.F64 {reg_cond}, D15")
+                secao_texto.append(f"    VMRS APSR_nzcv, FPSCR")
+                secao_texto.append(f"    BEQ {label_fim}             @ se condição == 0.0 (falso), sai do loop")
+
+            # Processa o corpo do loop
+            secao_texto.append(f"    @ Corpo do WHILE")
+            if cmd_corpo:
+                processarComando(cmd_corpo)
+
+            # Volta ao início do loop
+            secao_texto.append(f"    B {label_inicio}               @ volta ao início do loop")
+            secao_texto.append(f"{label_fim}:")
+
             return None
 
         if "KEYWORD_IF" in tipos_terminais:
-            # FAÇA ISSO: Gerar condicional com labels (label_else, label_fim), processar condição, then e else
+            label_else = obterLabelUnico("if_else")
+            label_fim = obterLabelUnico("if_fim")
+
+            # Extrair sub-comandos da árvore
+            # Estrutura na árvore: conteudo_comando → comando(cond) + sufixo_comando → ( comando(then) + apos_cmd → ( comando(else) + IF ) )
+            filhos_conteudo = no_conteudo.get("nodos_filhos", [])
+            cmd_condicao = None
+            sufixo_cmd = None
+            for f in filhos_conteudo:
+                if f.get("nodo_pai") == "comando" and cmd_condicao is None:
+                    cmd_condicao = f
+                elif f.get("nodo_pai") == "sufixo_comando":
+                    sufixo_cmd = f
+
+            cmd_then = None
+            apos_cmd = None
+            if sufixo_cmd:
+                for f in sufixo_cmd.get("nodos_filhos", []):
+                    if f.get("nodo_pai") == "comando":
+                        cmd_then = f
+                    elif f.get("nodo_pai") == "apos_cmd":
+                        apos_cmd = f
+
+            cmd_else = None
+            if apos_cmd:
+                for f in apos_cmd.get("nodos_filhos", []):
+                    if f.get("nodo_pai") == "comando":
+                        cmd_else = f
+
             secao_texto.append("")
-            secao_texto.append("    @ FAÇA ISSO: IF - implementar condicional com labels")
+            secao_texto.append(f"    @ IF - Avalia condição")
+            reg_cond = None
+            if cmd_condicao:
+                reg_cond = processarComando(cmd_condicao)
+
+            # Compara resultado com 0.0 (falso) → se igual a falso, pula para o ELSE
+            if reg_cond:
+                nome_zero = garantirConstante("0.0")
+                secao_texto.append(f"    LDR R4, ={nome_zero}")
+                secao_texto.append(f"    VLDR D15, [R4]              @ 0.0 para comparação")
+                secao_texto.append(f"    VCMP.F64 {reg_cond}, D15")
+                secao_texto.append(f"    VMRS APSR_nzcv, FPSCR")
+                secao_texto.append(f"    BEQ {label_else}            @ se falso (0.0), pula pro else")
+
+            # Bloco THEN (Verdadeiro)
+            secao_texto.append(f"    @ IF - Bloco THEN (Verdadeiro)")
+            if cmd_then:
+                processarComando(cmd_then)
+            secao_texto.append(f"    B {label_fim}               @ fim do then, pula o else")
+
+            # Bloco ELSE (Falso)
+            secao_texto.append(f"{label_else}:")
+            secao_texto.append(f"    @ IF - Bloco ELSE (Falso)")
+            if cmd_else:
+                processarComando(cmd_else)
+
+            secao_texto.append(f"{label_fim}:")
             return None
 
         # ---- Comando simples: processa terminais em ordem RPN ----
@@ -833,9 +944,50 @@ def gerarAssembly(arvore, nome_arquivo):
 
             # --- OPERADOR_REL: comparação relacional ---
             elif tipo == "OPERADOR_REL":
-                # FAÇA ISSO: Desempilhar 2 regs, usar VCMP.F64 + VMRS, empilhar 1.0 (true) ou 0.0 (false)
-                # FAÇA ISSO: Branch invertido por operador: < -> BGE, > -> BLE, == -> BNE, != -> BEQ, <= -> BGT, >= -> BLT
-                secao_texto.append(f"    @ FAÇA ISSO: comparação relacional '{valor}'")
+                if len(pilha_regs) < 2:
+                    secao_texto.append(f"    @ ERRO: operandos insuficientes para '{valor}'")
+                    continue
+
+                reg_b = pilha_regs.pop()
+                reg_a = pilha_regs.pop()
+                reg_res = f"D{cont_reg[0]}"
+                cont_reg[0] += 1
+
+                label_rel_verdade = obterLabelUnico("rel_verdade")
+                label_rel_fim = obterLabelUnico("rel_fim")
+
+                secao_texto.append(f"    @ comparação relacional '{valor}': {reg_a} {valor} {reg_b}")
+                secao_texto.append(f"    VCMP.F64 {reg_a}, {reg_b}")
+                secao_texto.append(f"    VMRS APSR_nzcv, FPSCR")
+
+                # Lógica Direta: Branch (salta para VERDADE) se a condição bater
+                if valor == "<":
+                    secao_texto.append(f"    BLT {label_rel_verdade}")
+                elif valor == ">":
+                    secao_texto.append(f"    BGT {label_rel_verdade}")
+                elif valor == "==":
+                    secao_texto.append(f"    BEQ {label_rel_verdade}")
+                elif valor == "!=":
+                    secao_texto.append(f"    BNE {label_rel_verdade}")
+                elif valor == "<=":
+                    secao_texto.append(f"    BLE {label_rel_verdade}")
+                elif valor == ">=":
+                    secao_texto.append(f"    BGE {label_rel_verdade}")
+
+                # --- SE A RESPOSTA FOI NÃO (Caiu aqui porque não pulou) ---
+                nome_c0 = garantirConstante("0.0")
+                secao_texto.append(f"    LDR R4, ={nome_c0}")
+                secao_texto.append(f"    VLDR {reg_res}, [R4]        @ false")
+                secao_texto.append(f"    B {label_rel_fim}           @ foge do bloco verdade")
+
+                # --- SE A RESPOSTA FOI SIM (Caiu de paraquedas após dar o pulo) ---
+                secao_texto.append(f"{label_rel_verdade}:")
+                nome_c1 = garantirConstante("1.0")
+                secao_texto.append(f"    LDR R4, ={nome_c1}")
+                secao_texto.append(f"    VLDR {reg_res}, [R4]        @ true")
+
+                secao_texto.append(f"{label_rel_fim}:")
+                pilha_regs.append(reg_res)
 
             # --- MEMORIA: load ou store (mesmo padrão do léxico) ---
             elif tipo == "MEMORIA":
@@ -853,9 +1005,25 @@ def gerarAssembly(arvore, nome_arquivo):
 
             # KEYWORD_RES: acessa histórico de resultados
             elif tipo == "KEYWORD_RES":
-                # FAÇA ISSO: Converter N para inteiro, acessar resultados[total - N] e empilhar
-                # (OLHE as linhas 430-449 do lexico)
-                secao_texto.append(f"    @ FAÇA ISSO: RES - acessar resultado anterior")
+                if len(pilha_regs) < 1:
+                    secao_texto.append(f"    @ ERRO: falta N para RES")
+                    continue
+                
+                reg_n = pilha_regs.pop()
+                reg_res = f"D{cont_reg[0]}"
+                cont_reg[0] += 1
+                
+                secao_texto.append(f"    @ RES: acessa resultado anterior (total - N)")
+                secao_texto.append(f"    VCVT.S32.F64 S31, {reg_n}")
+                secao_texto.append(f"    VMOV R0, S31                @ R0 = N inteiro")
+                secao_texto.append(f"    LDR R1, =resultados")
+                secao_texto.append(f"    LDR R2, =numResultados")
+                secao_texto.append(f"    LDR R2, [R2]                @ R2 = contador total")
+                secao_texto.append(f"    SUB R2, R2, R0              @ indice = total - N")
+                secao_texto.append(f"    LSL R2, R2, #3              @ offset em bytes (double = 8 bytes)")
+                secao_texto.append(f"    ADD R1, R1, R2              @ R1 = endereço de resultados[indice]")
+                secao_texto.append(f"    VLDR {reg_res}, [R1]        @ resgata o valor para {reg_res}")
+                pilha_regs.append(reg_res)
 
         # Armazena resultado no histórico (se a pilha tiver exatamente 1 valor)
         if len(pilha_regs) == 1:
@@ -949,11 +1117,13 @@ def main():
     # Aciona o analisador repassando o buffer extraído e a tabela formatada
     derivacao = parsear(tokens, resultado_gramatica["tabela_ll1"])
 
-    # Gera o arquivo arvore_sintatica.md
-    gerarArvore(derivacao, arquivo_codigo_fonte)
+    # Gera o arquivo arvore_sintatica.md e arvore_sintatica.json
+    arvore = gerarArvore(derivacao, arquivo_codigo_fonte)
 
-    # Gera o arquivo Assembly (.s) a partir da árvore sintática
-    gerarAssembly(derivacao, arquivo_codigo_fonte)
+    if arvore is not None:
+        gerarAssembly(arvore, arquivo_codigo_fonte)
+    else:
+        print("Erro: A árvore não foi gerada corretamente. Geração de Assembly abortada.")
 
 if __name__ == "__main__":
     main()
