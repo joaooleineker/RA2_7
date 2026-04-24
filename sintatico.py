@@ -413,6 +413,8 @@ def lerTokens(nome_arquivo):
 def parsear(linhas_de_tokens, tabela_ll1):
     """
     Inicia a análise sintática descendente recursiva usando a tabela LL(1).
+    Mantém uma pilha de análise explícita para controle do parsing,
+    combinada com funções recursivas para cada não-terminal.
     """
     # Juntar a lista de listas em uma única lista
     lista_tokens = []
@@ -427,6 +429,15 @@ def parsear(linhas_de_tokens, tabela_ll1):
 
     indice_atual = 0
 
+    # Topo da pilha = último elemento da lista (índice -1)
+    # Inicializa com o marcador de final ($) e o símbolo inicial (programa)
+    pilha_analise = ["$", "programa"]
+
+    def exibirPilha():
+        """Exibe o estado atual da pilha (topo à esquerda)."""
+        conteudo = " | ".join(reversed(pilha_analise))
+        print(f"  [Pilha] topo → [ {conteudo} ] ← final")
+
     def consumirToken(tipo_esperado):
         nonlocal indice_atual
         
@@ -438,7 +449,11 @@ def parsear(linhas_de_tokens, tabela_ll1):
         
         # Valida se é TIPO (NUMERO) ou o VALOR exato ($)
         if token_analisado.tipo == tipo_esperado or token_analisado.valor == tipo_esperado or token_analisado.tipo == f"KEYWORD_{tipo_esperado}":
-            print(f"  [Match] Casou limite de token: {token_analisado.valor} (referência: {tipo_esperado})")
+            # Remove o terminal do topo da pilha de análise
+            if pilha_analise and pilha_analise[-1] == tipo_esperado:
+                pilha_analise.pop()
+            print(f"  [Match] Casou token: {token_analisado.valor} (referência: {tipo_esperado})")
+            exibirPilha()
             indice_atual += 1
             return True
             
@@ -459,7 +474,8 @@ def parsear(linhas_de_tokens, tabela_ll1):
             textos_dos_tokens.append(token.tipo)  
             
     fita_formatada = " ".join(textos_dos_tokens)
-    print(f"-> Fita pronta: {fita_formatada}\n")
+    print(f"-> Fita pronta: {fita_formatada}")
+    print(f"-> Pilha inicial: [ programa | $ ]\n")
     def acionarModoPanico(nao_terminal_afetado):
         nonlocal indice_atual
         if indice_atual < len(lista_tokens):
@@ -479,9 +495,19 @@ def parsear(linhas_de_tokens, tabela_ll1):
         
         if chave_de_busca in tabela_ll1:
             producao_encontrada = tabela_ll1[chave_de_busca]
-            
+
+            # Remove o não-terminal do topo (foi selecionado para expansão)
+            if pilha_analise and pilha_analise[-1] == nome_nao_terminal:
+                pilha_analise.pop()
+
+            # Empilha símbolos da produção em ordem REVERSA (o primeiro símbolo da produção fica no topo)
+            simbolos_para_empilhar = [s for s in producao_encontrada if s != "ε"]
+            for simbolo in reversed(simbolos_para_empilhar):
+                pilha_analise.append(simbolo)
+
             nodo_arvore = {"nodo_pai": nome_nao_terminal, "producao_acionada": " ".join(producao_encontrada), "nodos_filhos": []}
             print(f"  [Derivação] {nome_nao_terminal} -> {nodo_arvore['producao_acionada']}")
+            exibirPilha()
             
             for simbolo_producao in producao_encontrada:
                 if simbolo_producao == "ε":
@@ -554,7 +580,7 @@ def parsear(linhas_de_tokens, tabela_ll1):
     arvore_sintatica_ast = parsePrograma()
     
     if indice_atual < len(lista_tokens) and lista_tokens[indice_atual].tipo != "$":
-        print(f"\n  [Aviso Analítico] O parsing finalizou através da raiz mas sobraram tokens estáticos não processados na fita, a partir domedidor: {lista_tokens[indice_atual].valor}")
+        print(f"\n  [Aviso Analítico] O parsing finalizou através da raiz mas sobraram tokens não processados na fita, a partir do medidor: {lista_tokens[indice_atual].valor}")
     
     print("\n=> Parsing e rastreamento recursivo concluídos com sucesso!")
     return arvore_sintatica_ast # retorna a AST
@@ -875,8 +901,21 @@ def gerarAssembly(arvore, nome_arquivo):
             secao_texto.append(f"{label_fim}:")
             return None
 
-        # ---- Comando simples: processa terminais em ordem RPN ----
+        # Adiciona no assembly comentários para cada comando simples
+        pedacos_expr = []
+        for t in terminais:
+            terminal_atual = t.get("terminal_folha", "")
+            if terminal_atual not in ("ε", "ABRE_PAREN", "FECHA_PAREN"):
+                valor_atual = t.get("valor_extraido", "")
+                if valor_atual != "":
+                    pedacos_expr.append(valor_atual)
+                else:
+                    pedacos_expr.append(terminal_atual)
+                    
+        expr_str = " ".join(pedacos_expr)
+        
         secao_texto.append("")
+        secao_texto.append(f" @ Comando RPN: ( {expr_str} ) ")
         for terminal in terminais:
             tipo = terminal.get("terminal_folha", "")
             valor = terminal.get("valor_extraido", "")
