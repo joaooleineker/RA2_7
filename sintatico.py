@@ -1,11 +1,12 @@
 """
 Integrantes do grupo (ordem alfabética):
-- Daniel de Almeida Santos Bina - @danielbina
-- Eduardo Ferreira de Melo - @edufmelo
-- João Eduardo Faccin Leineker - @joaooleineker
+Daniel de Almeida Santos Bina - danielbina
+Eduardo Ferreira de Melo - edufmelo
+João Eduardo Faccin Leineker - joaooleineker
 
-- Nome do grupo no Canvas: RA2 7
+Nome do grupo no Canvas: RA2 7
 """
+
 import sys
 import io
 import json
@@ -379,6 +380,7 @@ def lerTokens(nome_arquivo):
     Lê o arquivo tokens.txt e retorna lista de listas de Token.
     """
     lista_de_linhas = []
+    numero_linha = 1
 
     try:
         with open(nome_arquivo, 'r') as arquivo_texto:
@@ -386,6 +388,7 @@ def lerTokens(nome_arquivo):
                 # Validação extra (analisar necessidade depois)
                 linha_limpa = linha_bruta.strip() # remove espaços em branco (como implementado no léxico)
                 if not linha_limpa:
+                    numero_linha += 1
                     continue # pula linhas vazias
 
                 tokens_da_linha = []
@@ -397,12 +400,20 @@ def lerTokens(nome_arquivo):
                     # Divide entre tipo e valor usando o separador ":"
                     if ':' in pedaco:
                         tipo_extraido, valor_extraido = pedaco.split(':', 1)
+
+                        # Validação básica de tokens
+                        if tipo_extraido == "ERRO":
+                            print(f"Erro léxico na linha {numero_linha}: {valor_extraido}\n")
+                            continue # pula este token para não quebrar o parser LL(1)
+
                         # Cria o objeto Token (usando a classe importada do lexico.py)
                         novo_token = Token(tipo_extraido, valor_extraido)
                         tokens_da_linha.append(novo_token)
 
                 if tokens_da_linha:
                     lista_de_linhas.append(tokens_da_linha)
+
+                numero_linha += 1
 
         return lista_de_linhas
 
